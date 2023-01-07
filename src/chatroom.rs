@@ -6,7 +6,13 @@ use std::{
 
 #[derive(Default)]
 pub struct Chatroom {
-    connected_users: Mutex<HashMap<String, Sender<Message>>>,
+    connected_users: Mutex<HashMap<Session, (String, Sender<Message>)>>,
+    session_count: Mutex<usize>,
+}
+
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub struct Session {
+    id: usize,
 }
 
 pub enum Message {
@@ -52,11 +58,11 @@ impl Display for JoinError {
 }
 
 impl Chatroom {
-    pub fn join(&self, nickname: String, message_sender: Sender<Message>) -> Result<(), JoinError> {
-        let mut connected_users = self.connected_users.lock().unwrap();
-        if connected_users.contains_key(&nickname) {
-            return Err(JoinError::DuplicateNickname);
-        }
+    pub fn join(
+        &self,
+        nickname: String,
+        message_sender: Sender<Message>,
+    ) -> Result<Session, JoinError> {
         if nickname.len() == 0
             || nickname
                 .chars()
@@ -64,42 +70,60 @@ impl Chatroom {
         {
             return Err(JoinError::InvalidNickname);
         }
+        let mut connected_users = self.connected_users.lock().unwrap();
+
+        for (n, _) in connected_users.values() {
+            if n == &nickname {
+                return Err(JoinError::DuplicateNickname);
+            }
+        }
 
         // send nicknames to the joining user
         let nicknames = connected_users
-            .keys()
+            .values()
+            .map(|(n, _)| n)
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let _ = message_sender.send(Message::ConnectedUsers(nicknames));
 
         // send all connected users the Joined message
-        for sender in connected_users.values() {
+        for (_, sender) in connected_users.values() {
             let _ = sender.send(Message::Joined(nickname.clone()));
         }
 
-        // register the joined user in our connected user database
-        connected_users.insert(nickname, message_sender);
+        let session = self.new_session();
 
-        Ok(())
+        // register the joined user in our connected user database
+        connected_users.insert(session, (nickname, message_sender));
+
+        Ok(session)
+    }
+    fn new_session(&self) -> Session {
+        let mut session_count = self.session_count.lock().unwrap();
+        *session_count += 1;
+        Session { id: *session_count }
     }
 
-    pub fn leave(&self, nickname: String) {
+    pub fn leave(&self, session: Session) {
         let mut connected_users = self.connected_users.lock().unwrap();
-        connected_users.remove(&nickname);
-        // send all connected users the Joined message
-        for sender in connected_users.values() {
-            let _ = sender.send(Message::Left(nickname.clone()));
+        if let Some((nickname, _)) = connected_users.remove(&session) {
+            // send all connected users the Joined message
+            for (_, sender) in connected_users.values() {
+                let _ = sender.send(Message::Left(nickname.clone()));
+            }
         }
     }
-    pub fn send_message(&self, from: String, text: String) {
+    pub fn send_message(&self, from: Session, text: String) {
         let connected_users = self.connected_users.lock().unwrap();
-        // send all connected users the Joined message
-        for (nickname, sender) in connected_users.iter() {
-            if nickname != &from {
-                let _ = sender.send(Message::Message {
-                    from: from.clone(),
-                    text: text.clone(),
-                });
+        if let Some((from_nickname, _)) = connected_users.get(&from) {
+            // send all connected users the Joined message
+            for (to, (_, sender)) in connected_users.iter() {
+                if to != &from {
+                    let _ = sender.send(Message::Message {
+                        from: from_nickname.clone(),
+                        text: text.clone(),
+                    });
+                }
             }
         }
     }

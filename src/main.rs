@@ -56,7 +56,7 @@ fn chat(mut stream: TcpStream, chatroom: Arc<Chatroom>) {
 
     let nickname = nickname.trim().to_string();
     match chatroom.join(nickname.clone(), sender) {
-        Ok(_) => {
+        Ok(session) => {
             thread::spawn(move || {
                 for message in receiver.iter() {
                     let _ = write!(stream, "{message}\n");
@@ -65,12 +65,12 @@ fn chat(mut stream: TcpStream, chatroom: Arc<Chatroom>) {
             for line in read_stream.lines() {
                 if let Ok(line) = line {
                     let line = line.trim().to_string();
-                    chatroom.send_message(nickname.clone(), line);
+                    chatroom.send_message(session, line);
                 } else {
                     break;
                 }
             }
-            chatroom.leave(nickname);
+            chatroom.leave(session);
         }
         Err(e) => {
             write!(stream, "{e}\n").unwrap();
