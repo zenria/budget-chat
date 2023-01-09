@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    sync::{mpsc::channel, Arc},
+    sync::mpsc::channel,
     thread,
 };
 
@@ -24,7 +24,7 @@ fn main() {
         .parse::<SocketAddr>()
         .unwrap();
     println!("Listening to {s}");
-    let chatroom = Arc::new(Chatroom::default());
+    let chatroom = Chatroom::default();
     let listener = TcpListener::bind(s).unwrap();
     for incoming in listener.incoming() {
         match incoming {
@@ -38,7 +38,7 @@ fn main() {
     }
 }
 
-fn chat(mut stream: TcpStream, chatroom: Arc<Chatroom>) {
+fn chat(mut stream: TcpStream, chatroom: Chatroom) {
     let peer_addr = stream.peer_addr().unwrap();
 
     println!("{peer_addr} - connected!");
@@ -65,12 +65,12 @@ fn chat(mut stream: TcpStream, chatroom: Arc<Chatroom>) {
             for line in read_stream.lines() {
                 if let Ok(line) = line {
                     let line = line.trim().to_string();
-                    chatroom.send_message(session, line);
+                    session.send_message(line);
                 } else {
                     break;
                 }
             }
-            chatroom.leave(session);
+            // Note: session will be dropped thus, the user will leave the chatroom
         }
         Err(e) => {
             write!(stream, "{e}\n").unwrap();

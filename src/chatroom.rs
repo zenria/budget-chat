@@ -1,18 +1,51 @@
 use std::{
     collections::HashMap,
     fmt::Display,
-    sync::{mpsc::Sender, Mutex},
+    sync::{mpsc::Sender, Arc},
 };
 
-#[derive(Default)]
+use parking_lot::Mutex;
+
+#[derive(Default, Clone)]
 pub struct Chatroom {
-    connected_users: Mutex<HashMap<Session, (String, Sender<Message>)>>,
-    session_count: Mutex<usize>,
+    inner: Arc<ChatroomImpl>,
+}
+
+impl Chatroom {
+    /// Join the chatroom
+    pub fn join(
+        &self,
+        nickname: String,
+        message_sender: Sender<Message>,
+    ) -> Result<Session, JoinError> {
+        Ok(Session {
+            id: self.inner.join(nickname, message_sender)?,
+            chatroom_impl: self.inner.clone(),
+        })
+    }
 }
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+struct SessionId(usize);
+
+/// The current chat session.
+///
+/// Dropping the session will make the user leave the chatroom
 pub struct Session {
-    id: usize,
+    id: SessionId,
+    chatroom_impl: Arc<ChatroomImpl>,
+}
+
+impl Session {
+    pub fn send_message(&self, text: String) {
+        self.chatroom_impl.send_message(self, text);
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.chatroom_impl.leave(self.id);
+    }
 }
 
 pub enum Message {
@@ -57,12 +90,19 @@ impl Display for JoinError {
     }
 }
 
-impl Chatroom {
-    pub fn join(
+/// Chatroom private implementation
+#[derive(Default)]
+struct ChatroomImpl {
+    connected_users: Mutex<HashMap<SessionId, (String, Sender<Message>)>>,
+    session_count: Mutex<usize>,
+}
+
+impl ChatroomImpl {
+    fn join(
         &self,
         nickname: String,
         message_sender: Sender<Message>,
-    ) -> Result<Session, JoinError> {
+    ) -> Result<SessionId, JoinError> {
         if nickname.len() == 0
             || nickname
                 .chars()
@@ -70,7 +110,7 @@ impl Chatroom {
         {
             return Err(JoinError::InvalidNickname);
         }
-        let mut connected_users = self.connected_users.lock().unwrap();
+        let mut connected_users = self.connected_users.lock();
 
         for (n, _) in connected_users.values() {
             if n == &nickname {
@@ -91,21 +131,22 @@ impl Chatroom {
             let _ = sender.send(Message::Joined(nickname.clone()));
         }
 
-        let session = self.new_session();
+        let session_id = self.new_session_id();
 
         // register the joined user in our connected user database
-        connected_users.insert(session, (nickname, message_sender));
+        connected_users.insert(session_id, (nickname, message_sender));
 
-        Ok(session)
+        Ok(session_id)
     }
-    fn new_session(&self) -> Session {
-        let mut session_count = self.session_count.lock().unwrap();
+
+    fn new_session_id(&self) -> SessionId {
+        let mut session_count = self.session_count.lock();
         *session_count += 1;
-        Session { id: *session_count }
+        SessionId(*session_count)
     }
 
-    pub fn leave(&self, session: Session) {
-        let mut connected_users = self.connected_users.lock().unwrap();
+    fn leave(&self, session: SessionId) {
+        let mut connected_users = self.connected_users.lock();
         if let Some((nickname, _)) = connected_users.remove(&session) {
             // send all connected users the Joined message
             for (_, sender) in connected_users.values() {
@@ -113,12 +154,12 @@ impl Chatroom {
             }
         }
     }
-    pub fn send_message(&self, from: Session, text: String) {
-        let connected_users = self.connected_users.lock().unwrap();
-        if let Some((from_nickname, _)) = connected_users.get(&from) {
+    fn send_message(&self, from: &Session, text: String) {
+        let connected_users = self.connected_users.lock();
+        if let Some((from_nickname, _)) = connected_users.get(&from.id) {
             // send all connected users the Joined message
             for (to, (_, sender)) in connected_users.iter() {
-                if to != &from {
+                if to != &from.id {
                     let _ = sender.send(Message::Message {
                         from: from_nickname.clone(),
                         text: text.clone(),

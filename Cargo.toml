@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 clap = { features = ["derive"], version = "4" }
 itertools = "0.10"
+parking_lot = "0.12"
